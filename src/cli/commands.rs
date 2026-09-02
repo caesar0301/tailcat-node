@@ -81,6 +81,7 @@ async fn init_inner(
 
     // Generate node ID.
     let node_id = id.unwrap_or_else(|| format!("agent-{}", &uuid::Uuid::new_v4().to_string()[..8]));
+
     let node_name = name.unwrap_or_else(|| {
         hostname::get()
             .ok()
@@ -303,7 +304,7 @@ async fn identity(dir: &Path) -> Result<()> {
 async fn token(dir: &Path) -> Result<()> {
     let id = IdentityStore::new(dir.to_path_buf()).load()?;
     // The join token is derived from the public key.
-    let token = format!("tc-{}", &id.public_key);
+    let token = format!("tc-{}", id.public_key);
     println!("{}", token);
     Ok(())
 }
