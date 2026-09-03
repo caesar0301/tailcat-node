@@ -27,7 +27,7 @@ pub async fn run() -> Result<()> {
     let dir = resolve_config_dir(cli.config_dir)?;
     match cli.command {
         Command::Init { name, id, force } => init_inner(&dir, name, id, force).await,
-        Command::Start => start(&dir).await,
+        Command::Start { foreground } => start(&dir, foreground).await,
         Command::Stop => stop(&dir).await,
         Command::Status => status(&dir).await,
         Command::Identity => identity(&dir).await,
@@ -136,10 +136,71 @@ async fn init_inner(
 
 // -- start --
 
-async fn start(dir: &Path) -> Result<()> {
+async fn start(dir: &Path, foreground: bool) -> Result<()> {
     // Load config and identity.
     let config = Config::load(dir)?;
     let identity = IdentityStore::new(dir.to_path_buf()).load()?;
+
+    // If not foreground, spawn a detached child with --foreground and exit.
+    if !foreground {
+        // Check if already running.
+        let pid_path = dir.join("state/daemon.pid");
+        if pid_path.exists() {
+            let pid_str = std::fs::read_to_string(&pid_path)?;
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                #[cfg(unix)]
+                if unsafe { libc_kill(pid, 0) } == 0 {
+                    return Err(Error::Daemon(format!(
+                        "daemon already running (pid={})",
+                        pid
+                    )));
+                }
+            }
+            // Stale PID file — remove it.
+            let _ = std::fs::remove_file(&pid_path);
+        }
+
+        let exe = std::env::current_exe()?;
+        let mut cmd = std::process::Command::new(&exe);
+        // Global args must come before the subcommand.
+        if let Some(dir_str) = dir.to_str() {
+            cmd.arg("--config-dir").arg(dir_str);
+        }
+        cmd.arg("start").arg("--foreground");
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // Detach from terminal: create new session, become session leader.
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+        }
+
+        let child = cmd.spawn()?;
+        let child_pid = child.id();
+        // Don't wait — drop the handle to let it run independently.
+        drop(child);
+
+        // Wait briefly for the child to write its PID file and bind the socket.
+        let socket_path = dir.join("tailcat-node.sock");
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if socket_path.exists() {
+                break;
+            }
+        }
+
+        println!("tailcat-node daemon started (pid={})", child_pid);
+        return Ok(());
+    }
+
+    // --- Foreground mode (the actual daemon process) ---
 
     // Initialize the daemon.
     let daemon = Arc::new(Daemon::new(dir.to_path_buf(), config, identity)?);
@@ -169,7 +230,38 @@ async fn start(dir: &Path) -> Result<()> {
     // Start the IPC server.
     let socket_path = dir.join("tailcat-node.sock");
     tracing::info!("Starting tailcat-node daemon (pid={})", std::process::id());
-    println!("tailcat-node daemon started (pid={})", std::process::id());
+
+    // Set up signal handling for graceful shutdown.
+    let pid_path_clone = pid_path.clone();
+    let socket_path_clone = socket_path.clone();
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("install SIGTERM handler");
+            let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    tracing::info!("Received SIGTERM, shutting down");
+                }
+                _ = sigint.recv() => {
+                    tracing::info!("Received SIGINT, shutting down");
+                }
+            }
+            // Clean up.
+            let _ = std::fs::remove_file(&pid_path_clone);
+            let _ = std::fs::remove_file(&socket_path_clone);
+            std::process::exit(0);
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.ok();
+            let _ = std::fs::remove_file(&pid_path_clone);
+            let _ = std::fs::remove_file(&socket_path_clone);
+            std::process::exit(0);
+        }
+    });
 
     // Serve until killed.
     crate::ipc::serve(daemon, socket_path).await?;

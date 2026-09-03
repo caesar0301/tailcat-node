@@ -43,7 +43,12 @@ pub enum Command {
         force: bool,
     },
     /// Start the daemon.
-    Start,
+    Start {
+        /// Run in foreground (internal use: the parent process spawns a
+        /// child with this flag, then exits).
+        #[arg(long, hide = true)]
+        foreground: bool,
+    },
     /// Stop the daemon.
     Stop,
     /// Show node status.
