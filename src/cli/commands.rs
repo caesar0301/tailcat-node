@@ -1175,7 +1175,7 @@ async fn install_from_binary() -> Result<()> {
 
     let asset = assets.iter().find(|a| {
         let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        name.contains(&arch_name)
+        name.contains(arch_name)
             && name.contains(os_name)
             && (name.ends_with(".tar.gz") || name.ends_with(".zip"))
     });

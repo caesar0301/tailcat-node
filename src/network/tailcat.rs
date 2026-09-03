@@ -91,11 +91,11 @@ impl TailcatProcessBackend {
             return Err(Error::Backend(format!(
                 "tailcat {} failed: {}",
                 args.join(" "),
-                stderr
-                    .trim()
-                    .is_empty()
-                    .then_some(stdout.trim())
-                    .unwrap_or(stderr.trim())
+                if stderr.trim().is_empty() {
+                    stdout.trim()
+                } else {
+                    stderr.trim()
+                }
             )));
         }
 
