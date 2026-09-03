@@ -29,6 +29,7 @@ pub async fn run() -> Result<()> {
         Command::Init { name, id, force } => init_inner(&dir, name, id, force).await,
         Command::Start { foreground } => start(&dir, foreground).await,
         Command::Stop => stop(&dir).await,
+        Command::Restart => restart(&dir).await,
         Command::Status => status(&dir).await,
         Command::Identity => identity(&dir).await,
         Command::Version => {
@@ -261,8 +262,7 @@ async fn start(dir: &Path, foreground: bool) -> Result<()> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("install SIGTERM handler");
+            let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
             let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
             tokio::select! {
                 _ = sigterm.recv() => {
@@ -333,6 +333,39 @@ async fn stop(dir: &Path) -> Result<()> {
     let _ = std::fs::remove_file(&pid_path);
 
     Ok(())
+}
+
+// -- restart --
+
+async fn restart(dir: &Path) -> Result<()> {
+    let pid_path = dir.join("state/daemon.pid");
+    let socket_path = dir.join("tailcat-node.sock");
+
+    // Stop the daemon if it's running.
+    if pid_path.exists() {
+        let pid_str = std::fs::read_to_string(&pid_path)?;
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            #[cfg(unix)]
+            {
+                if unsafe { libc_kill(pid, 0) } == 0 {
+                    unsafe { libc_kill(pid, 15) };
+                    println!("Stopping daemon (pid={})...", pid);
+                    // Wait for the process to exit and clean up.
+                    for _ in 0..50 {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        if unsafe { libc_kill(pid, 0) } != 0 {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&pid_path);
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    // Start the daemon fresh.
+    start(dir, false).await
 }
 
 // -- status --
@@ -945,7 +978,9 @@ async fn install(force: bool, method: Option<String>) -> Result<()> {
                     return Ok(());
                 }
                 eprintln!("  Method '{}' completed but tailcat not found on PATH.", m);
-                eprintln!("  You may need to restart your shell or add the install location to PATH.");
+                eprintln!(
+                    "  You may need to restart your shell or add the install location to PATH."
+                );
                 return Ok(());
             }
             Err(e) => {
@@ -1035,10 +1070,7 @@ async fn install_by_method(method: &str, _force: bool) -> Result<()> {
         "go" => {
             println!("Running: go install github.com/tailscale/tailcat/cmd/tailcat@latest");
             let output = std::process::Command::new("go")
-                .args([
-                    "install",
-                    "github.com/tailscale/tailcat/cmd/tailcat@latest",
-                ])
+                .args(["install", "github.com/tailscale/tailcat/cmd/tailcat@latest"])
                 .stdout(std::process::Stdio::inherit())
                 .stderr(std::process::Stdio::inherit())
                 .output()
@@ -1143,7 +1175,9 @@ async fn install_from_binary() -> Result<()> {
 
     let asset = assets.iter().find(|a| {
         let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        name.contains(&arch_name) && name.contains(os_name) && (name.ends_with(".tar.gz") || name.ends_with(".zip"))
+        name.contains(&arch_name)
+            && name.contains(os_name)
+            && (name.ends_with(".tar.gz") || name.ends_with(".zip"))
     });
 
     let asset = asset.ok_or_else(|| {
@@ -1180,7 +1214,12 @@ async fn install_from_binary() -> Result<()> {
     if ext == "tar.gz" {
         println!("Extracting tar.gz...");
         let output = std::process::Command::new("tar")
-            .args(["-xzf", &archive_path.to_string_lossy(), "-C", &extract_dir.to_string_lossy()])
+            .args([
+                "-xzf",
+                &archive_path.to_string_lossy(),
+                "-C",
+                &extract_dir.to_string_lossy(),
+            ])
             .output()
             .map_err(Error::Io)?;
         if !output.status.success() {
@@ -1195,7 +1234,12 @@ async fn install_from_binary() -> Result<()> {
         {
             println!("Extracting zip...");
             let output = std::process::Command::new("unzip")
-                .args(["-o", &archive_path.to_string_lossy(), "-d", &extract_dir.to_string_lossy()])
+                .args([
+                    "-o",
+                    &archive_path.to_string_lossy(),
+                    "-d",
+                    &extract_dir.to_string_lossy(),
+                ])
                 .output()
                 .map_err(Error::Io)?;
             if !output.status.success() {
@@ -1210,9 +1254,13 @@ async fn install_from_binary() -> Result<()> {
             println!("Extracting zip...");
             let output = std::process::Command::new("powershell")
                 .args([
-                    "-NoProfile", "-Command",
-                    &format!("Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                             archive_path.display(), extract_dir.display()),
+                    "-NoProfile",
+                    "-Command",
+                    &format!(
+                        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                        archive_path.display(),
+                        extract_dir.display()
+                    ),
                 ])
                 .output()
                 .map_err(Error::Io)?;
@@ -1223,7 +1271,11 @@ async fn install_from_binary() -> Result<()> {
     }
 
     // Find the tailcat binary in the extracted files.
-    let binary_name = if os == "windows" { "tailcat.exe" } else { "tailcat" };
+    let binary_name = if os == "windows" {
+        "tailcat.exe"
+    } else {
+        "tailcat"
+    };
     let binary_path = find_binary(&extract_dir, binary_name)?;
 
     // Install to a suitable location.
@@ -1261,8 +1313,10 @@ fn curl_text(url: &str, accept: &str) -> Result<String> {
     let output = std::process::Command::new("curl")
         .args([
             "-fsSL",
-            "-H", &format!("Accept: {}", accept),
-            "-H", "User-Agent: tailcat-node-installer",
+            "-H",
+            &format!("Accept: {}", accept),
+            "-H",
+            "User-Agent: tailcat-node-installer",
             url,
         ])
         .output()
@@ -1284,8 +1338,10 @@ fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
     let output = std::process::Command::new("curl")
         .args([
             "-fsSL",
-            "-H", "User-Agent: tailcat-node-installer",
-            "-o", &dest.to_string_lossy(),
+            "-H",
+            "User-Agent: tailcat-node-installer",
+            "-o",
+            &dest.to_string_lossy(),
             url,
         ])
         .output()

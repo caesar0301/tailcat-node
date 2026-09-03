@@ -91,7 +91,11 @@ impl TailcatProcessBackend {
             return Err(Error::Backend(format!(
                 "tailcat {} failed: {}",
                 args.join(" "),
-                stderr.trim().is_empty().then_some(stdout.trim()).unwrap_or(stderr.trim())
+                stderr
+                    .trim()
+                    .is_empty()
+                    .then_some(stdout.trim())
+                    .unwrap_or(stderr.trim())
             )));
         }
 
@@ -140,7 +144,12 @@ impl Backend for TailcatProcessBackend {
         let output = self
             .run(&["ping", "--timeout=10s", token])
             .await
-            .map_err(|e| Error::Backend(format!("ping to peer {peer_id} failed: {}", e.inner_message())))?;
+            .map_err(|e| {
+                Error::Backend(format!(
+                    "ping to peer {peer_id} failed: {}",
+                    e.inner_message()
+                ))
+            })?;
 
         // Parse pong output. tailcat ping prints lines like:
         //   "pong in 42.1ms via DERP(sfo)"

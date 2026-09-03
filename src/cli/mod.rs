@@ -6,7 +6,7 @@
 //! tailcat-node connect | disconnect | ping
 //! tailcat-node service list | add | remove
 //! tailcat-node doctor | logs | install
-//! tailcat-node init | start | stop | token
+//! tailcat-node init | start | stop | restart | token
 //! ```
 
 pub mod commands;
@@ -51,6 +51,8 @@ pub enum Command {
     },
     /// Stop the daemon.
     Stop,
+    /// Restart the daemon (stop + start).
+    Restart,
     /// Show node status.
     Status,
     /// Show node identity.
