@@ -5,7 +5,7 @@
 //! tailcat-node peer list | add | remove | show | enable | disable
 //! tailcat-node connect | disconnect | ping
 //! tailcat-node service list | add | remove
-//! tailcat-node doctor | logs
+//! tailcat-node doctor | logs | install
 //! tailcat-node init | start | stop | token
 //! ```
 
@@ -74,6 +74,15 @@ pub enum Command {
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
+    },
+    /// Install the tailcat binary (the networking substrate).
+    Install {
+        /// Force reinstall even if tailcat is already installed.
+        #[arg(long)]
+        force: bool,
+        /// Force a specific install method (brew, go, nix, aur, binary).
+        #[arg(long)]
+        method: Option<String>,
     },
     /// Run diagnostics.
     Doctor,

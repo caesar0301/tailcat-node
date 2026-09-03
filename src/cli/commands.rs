@@ -41,6 +41,7 @@ pub async fn run() -> Result<()> {
         Command::Disconnect { id } => disconnect(&dir, id).await,
         Command::Ping { id } => ping(&dir, id).await,
         Command::Service { command } => service(&dir, command).await,
+        Command::Install { force, method } => install(force, method).await,
         Command::Doctor => doctor(&dir).await,
         Command::Logs => logs(&dir).await,
     }
@@ -874,6 +875,486 @@ async fn doctor(dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+// -- install --
+
+/// Install the tailcat binary (the networking substrate that tailcat-node depends on).
+///
+/// Per https://github.com/tailscale/tailcat, tailcat can be installed via:
+///   - Homebrew (macOS): `brew install tailcat`
+///   - Go: `go install github.com/tailscale/tailcat/cmd/tailcat@latest`
+///   - Nix: `nix profile install github:tailscale/tailcat`
+///   - AUR (Arch Linux): `yay -S tailcat-bin`
+///   - Prebuilt binaries from GitHub Releases
+///
+/// This command auto-detects the best available method for the current platform.
+async fn install(force: bool, method: Option<String>) -> Result<()> {
+    println!("tailcat-node install — installing tailcat binary");
+    println!("{}", "=".repeat(50));
+    println!();
+
+    // Check if already installed.
+    if !force {
+        if let Ok(path) = which::which("tailcat") {
+            println!("tailcat is already installed at: {}", path.display());
+            println!("Use --force to reinstall.");
+            return Ok(());
+        }
+    }
+
+    // If a specific method was requested, use it.
+    if let Some(m) = method {
+        return install_by_method(&m, force).await;
+    }
+
+    // Auto-detect the best method for this platform.
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    println!("Detected platform: {}-{}", arch, os);
+    println!();
+
+    // Try methods in order of preference for this platform.
+    let methods = detect_methods(os);
+    if methods.is_empty() {
+        return Err(Error::InvalidArgument(format!(
+            "no supported install method detected for {}-{}. \
+             Please install tailcat manually: https://github.com/tailscale/tailcat",
+            arch, os
+        )));
+    }
+
+    println!("Available install methods (in order of preference):");
+    for (i, m) in methods.iter().enumerate() {
+        println!("  {}. {}", i + 1, m);
+    }
+    println!();
+
+    // Try each method until one succeeds.
+    for m in &methods {
+        println!("Trying method: {}...", m);
+        match install_by_method(m, force).await {
+            Ok(()) => {
+                // Verify the install worked.
+                if let Ok(path) = which::which("tailcat") {
+                    println!();
+                    println!("✓ tailcat installed successfully at: {}", path.display());
+                    println!();
+                    println!("You can now start the daemon with full P2P connectivity:");
+                    println!("  tailcat-node start");
+                    return Ok(());
+                }
+                eprintln!("  Method '{}' completed but tailcat not found on PATH.", m);
+                eprintln!("  You may need to restart your shell or add the install location to PATH.");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("  Method '{}' failed: {}", m, e.inner_message());
+                eprintln!("  Trying next method...");
+                println!();
+            }
+        }
+    }
+
+    Err(Error::InvalidArgument(
+        "All automatic install methods failed. Please install tailcat manually: https://github.com/tailscale/tailcat".to_string(),
+    ))
+}
+
+/// Detect available install methods for the given OS, in order of preference.
+fn detect_methods(os: &str) -> Vec<&'static str> {
+    let mut methods = Vec::new();
+
+    match os {
+        "macos" => {
+            if which::which("brew").is_ok() {
+                methods.push("brew");
+            }
+            if which::which("go").is_ok() {
+                methods.push("go");
+            }
+            if which::which("nix").is_ok() {
+                methods.push("nix");
+            }
+            // Always offer binary download as a fallback.
+            methods.push("binary");
+        }
+        "linux" => {
+            // Check for Arch/AUR.
+            if which::which("yay").is_ok() {
+                methods.push("aur");
+            }
+            if which::which("go").is_ok() {
+                methods.push("go");
+            }
+            if which::which("nix").is_ok() {
+                methods.push("nix");
+            }
+            // Binary download works on all Linux distros.
+            methods.push("binary");
+        }
+        "freebsd" | "openbsd" | "netbsd" => {
+            if which::which("go").is_ok() {
+                methods.push("go");
+            }
+            methods.push("binary");
+        }
+        "windows" => {
+            // Windows has prebuilt binaries from GitHub Releases.
+            methods.push("binary");
+        }
+        _ => {
+            if which::which("go").is_ok() {
+                methods.push("go");
+            }
+            methods.push("binary");
+        }
+    }
+
+    methods
+}
+
+/// Install tailcat using a specific method.
+async fn install_by_method(method: &str, _force: bool) -> Result<()> {
+    match method {
+        "brew" => {
+            println!("Running: brew install tailcat");
+            let output = std::process::Command::new("brew")
+                .args(["install", "tailcat"])
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .output()
+                .map_err(Error::Io)?;
+            if !output.status.success() {
+                return Err(Error::InvalidArgument(
+                    "brew install tailcat failed".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        "go" => {
+            println!("Running: go install github.com/tailscale/tailcat/cmd/tailcat@latest");
+            let output = std::process::Command::new("go")
+                .args([
+                    "install",
+                    "github.com/tailscale/tailcat/cmd/tailcat@latest",
+                ])
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .output()
+                .map_err(Error::Io)?;
+            if !output.status.success() {
+                return Err(Error::InvalidArgument(
+                    "go install failed — make sure GOPATH/bin is on your PATH".to_string(),
+                ));
+            }
+            // Try to add GOPATH/bin to PATH hint.
+            if let Ok(home) = std::env::var("HOME") {
+                let gopath_bin = format!("{}/go/bin", home);
+                if which::which("tailcat").is_err() {
+                    println!();
+                    println!("Note: tailcat was installed to {}/", gopath_bin);
+                    println!("Add it to your PATH:");
+                    println!("  export PATH=\"$PATH:{}\"", gopath_bin);
+                }
+            }
+            Ok(())
+        }
+        "nix" => {
+            println!("Running: nix profile install github:tailscale/tailcat");
+            let output = std::process::Command::new("nix")
+                .args(["profile", "install", "github:tailscale/tailcat"])
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .output()
+                .map_err(Error::Io)?;
+            if !output.status.success() {
+                return Err(Error::InvalidArgument(
+                    "nix profile install failed".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        "aur" => {
+            println!("Running: yay -S --noconfirm tailcat-bin");
+            let output = std::process::Command::new("yay")
+                .args(["-S", "--noconfirm", "tailcat-bin"])
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .output()
+                .map_err(Error::Io)?;
+            if !output.status.success() {
+                return Err(Error::InvalidArgument(
+                    "yay -S tailcat-bin failed".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        "binary" => install_from_binary().await,
+        _ => Err(Error::InvalidArgument(format!(
+            "unknown install method '{}'. Valid: brew, go, nix, aur, binary",
+            method
+        ))),
+    }
+}
+
+/// Download and install a prebuilt tailcat binary from GitHub Releases.
+async fn install_from_binary() -> Result<()> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    // Determine the asset name pattern for this platform.
+    // tailcat releases use: tailcat_<version>_<os>_<arch>.tar.gz (Linux)
+    // and tailcat_<version>_<os>_<arch>.zip (Windows)
+    let (os_name, arch_name, ext) = match (os, arch) {
+        ("linux", "x86_64") => ("linux", "amd64", "tar.gz"),
+        ("linux", "aarch64") => ("linux", "arm64", "tar.gz"),
+        ("linux", "arm") => ("linux", "armv7", "tar.gz"),
+        ("darwin", "x86_64") => ("darwin", "amd64", "tar.gz"),
+        ("darwin", "aarch64") => ("darwin", "arm64", "tar.gz"),
+        ("windows", "x86_64") => ("windows", "amd64", "zip"),
+        ("windows", "aarch64") => ("windows", "arm64", "zip"),
+        _ => {
+            return Err(Error::InvalidArgument(format!(
+                "no prebuilt binary available for {}-{}",
+                arch, os
+            )));
+        }
+    };
+
+    // Query the GitHub API for the latest release.
+    println!("Fetching latest tailcat release info from GitHub...");
+    let api_url = "https://api.github.com/repos/tailscale/tailcat/releases/latest";
+    let response = curl_text(api_url, "application/vnd.github+json")?;
+
+    let release: serde_json::Value = serde_json::from_str(&response)?;
+
+    let tag = release
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("latest");
+    println!("Latest release: {}", tag);
+
+    // Find the matching asset.
+    let assets = release
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| Error::InvalidArgument("no assets in release".to_string()))?;
+
+    let asset = assets.iter().find(|a| {
+        let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        name.contains(&arch_name) && name.contains(os_name) && (name.ends_with(".tar.gz") || name.ends_with(".zip"))
+    });
+
+    let asset = asset.ok_or_else(|| {
+        Error::InvalidArgument(format!(
+            "no matching asset found for {}-{} in release {} (looked for pattern containing '{}' and '{}')",
+            arch, os, tag, arch_name, os_name
+        ))
+    })?;
+
+    let download_url = asset
+        .get("browser_download_url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::InvalidArgument("download URL not found in asset".to_string()))?;
+
+    let asset_name = asset
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("tailcat_download");
+
+    println!("Downloading: {} ({})", asset_name, download_url);
+
+    // Download to a temp file.
+    let tmp_dir = std::env::temp_dir().join("tailcat-node-install");
+    std::fs::create_dir_all(&tmp_dir)?;
+    let archive_path = tmp_dir.join(asset_name);
+    curl_download_file(download_url, &archive_path)?;
+    let file_size = std::fs::metadata(&archive_path)?.len();
+    println!("Downloaded {} bytes", file_size);
+
+    // Extract the binary.
+    let extract_dir = tmp_dir.join("extracted");
+    std::fs::create_dir_all(&extract_dir)?;
+
+    if ext == "tar.gz" {
+        println!("Extracting tar.gz...");
+        let output = std::process::Command::new("tar")
+            .args(["-xzf", &archive_path.to_string_lossy(), "-C", &extract_dir.to_string_lossy()])
+            .output()
+            .map_err(Error::Io)?;
+        if !output.status.success() {
+            return Err(Error::InvalidArgument(format!(
+                "tar extraction failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+    } else {
+        // .zip — use unzip on Unix, Expand-Archive on Windows.
+        #[cfg(unix)]
+        {
+            println!("Extracting zip...");
+            let output = std::process::Command::new("unzip")
+                .args(["-o", &archive_path.to_string_lossy(), "-d", &extract_dir.to_string_lossy()])
+                .output()
+                .map_err(Error::Io)?;
+            if !output.status.success() {
+                return Err(Error::InvalidArgument(format!(
+                    "unzip failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+        }
+        #[cfg(windows)]
+        {
+            println!("Extracting zip...");
+            let output = std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile", "-Command",
+                    &format!("Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                             archive_path.display(), extract_dir.display()),
+                ])
+                .output()
+                .map_err(Error::Io)?;
+            if !output.status.success() {
+                return Err(Error::InvalidArgument("Expand-Archive failed".to_string()));
+            }
+        }
+    }
+
+    // Find the tailcat binary in the extracted files.
+    let binary_name = if os == "windows" { "tailcat.exe" } else { "tailcat" };
+    let binary_path = find_binary(&extract_dir, binary_name)?;
+
+    // Install to a suitable location.
+    let install_dir = determine_install_dir()?;
+    std::fs::create_dir_all(&install_dir)?;
+    let dest = install_dir.join(binary_name);
+
+    // Copy the binary.
+    std::fs::copy(&binary_path, &dest)?;
+
+    // Make executable on Unix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&dest, perms)?;
+    }
+
+    println!("Installed tailcat to: {}", dest.display());
+    if which::which("tailcat").is_err() {
+        println!();
+        println!("Note: {} is not on your PATH.", install_dir.display());
+        println!("Add it to your PATH:");
+        println!("  export PATH=\"$PATH:{}\"", install_dir.display());
+    }
+
+    // Clean up temp files.
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    Ok(())
+}
+
+/// HTTP GET via curl, returns response body as text (for JSON API calls).
+fn curl_text(url: &str, accept: &str) -> Result<String> {
+    let output = std::process::Command::new("curl")
+        .args([
+            "-fsSL",
+            "-H", &format!("Accept: {}", accept),
+            "-H", "User-Agent: tailcat-node-installer",
+            url,
+        ])
+        .output()
+        .map_err(|e| Error::InvalidArgument(format!("curl not available: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(Error::InvalidArgument(format!(
+            "HTTP request failed (curl exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Download a file via curl -o (for binary downloads).
+fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
+    let output = std::process::Command::new("curl")
+        .args([
+            "-fsSL",
+            "-H", "User-Agent: tailcat-node-installer",
+            "-o", &dest.to_string_lossy(),
+            url,
+        ])
+        .output()
+        .map_err(|e| Error::InvalidArgument(format!("curl not available: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(Error::InvalidArgument(format!(
+            "download failed (curl exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    Ok(())
+}
+
+/// Recursively search for a binary by name in a directory.
+fn find_binary(dir: &Path, name: &str) -> Result<PathBuf> {
+    for entry in walk_dir(dir) {
+        if entry.file_name().and_then(|n| n.to_str()) == Some(name) {
+            return Ok(entry);
+        }
+    }
+    Err(Error::InvalidArgument(format!(
+        "binary '{}' not found in extracted archive",
+        name
+    )))
+}
+
+/// Simple recursive directory walker.
+fn walk_dir(dir: &Path) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                results.extend(walk_dir(&path));
+            } else {
+                results.push(path);
+            }
+        }
+    }
+    results
+}
+
+/// Determine where to install the binary.
+fn determine_install_dir() -> Result<PathBuf> {
+    // Try /usr/local/bin (common on macOS and Linux).
+    let usr_local = PathBuf::from("/usr/local/bin");
+    if usr_local.exists() {
+        // Check if we can write to it.
+        if std::fs::metadata(&usr_local).is_ok() {
+            let test = usr_local.join(".tailcat_write_test");
+            if std::fs::write(&test, "test").is_ok() {
+                let _ = std::fs::remove_file(&test);
+                return Ok(usr_local);
+            }
+        }
+    }
+
+    // Fall back to ~/.local/bin (Linux) or ~/bin.
+    if let Ok(home) = std::env::var("HOME") {
+        let local_bin = PathBuf::from(&home).join(".local/bin");
+        std::fs::create_dir_all(&local_bin).ok();
+        return Ok(local_bin);
+    }
+
+    // Last resort: /tmp
+    Ok(PathBuf::from("/tmp"))
 }
 
 // -- logs --
