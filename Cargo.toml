@@ -1,6 +1,6 @@
 [package]
 name = "tailcat-node"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 description = "Small cross-platform daemon around Tailcat - the networking substrate for agent runtimes"
 license = "MIT"
