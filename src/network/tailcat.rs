@@ -108,17 +108,18 @@ impl Backend for MockBackend {
 ///
 /// If the `tailcat` binary is found on PATH, use the process-based
 /// backend. Otherwise, fall back to the mock backend.
-pub fn build_backend() -> Arc<dyn Backend> {
+///
+/// Returns `(backend, is_mock)` so the caller can warn the user.
+pub fn build_backend() -> (Arc<dyn Backend>, bool) {
     match which::which("tailcat") {
         Ok(path) => {
             tracing::info!("Found tailcat binary at {}", path.display());
             // For now, use the mock backend even if tailcat is found,
             // since the process-based backend is not yet implemented.
-            Arc::new(MockBackend)
+            (Arc::new(MockBackend), true)
         }
         Err(_) => {
-            tracing::info!("tailcat binary not found, using mock backend");
-            Arc::new(MockBackend)
+            (Arc::new(MockBackend), true)
         }
     }
 }

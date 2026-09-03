@@ -143,6 +143,13 @@ async fn start(dir: &Path, foreground: bool) -> Result<()> {
 
     // If not foreground, spawn a detached child with --foreground and exit.
     if !foreground {
+        // Warn if the tailcat binary is missing — the daemon will run but
+        // all network operations will use the mock backend (no real connectivity).
+        if which::which("tailcat").is_err() {
+            eprintln!("⚠ tailcat binary not found on PATH — using mock backend (no real network connectivity)");
+            eprintln!("  Install tailcat or add it to PATH for real P2P connections.");
+        }
+
         // Check if already running.
         let pid_path = dir.join("state/daemon.pid");
         if pid_path.exists() {
@@ -201,6 +208,13 @@ async fn start(dir: &Path, foreground: bool) -> Result<()> {
     }
 
     // --- Foreground mode (the actual daemon process) ---
+
+    // Warn if the tailcat binary is missing — the daemon will run but
+    // all network operations will use the mock backend (no real connectivity).
+    if which::which("tailcat").is_err() {
+        eprintln!("⚠ tailcat binary not found on PATH — using mock backend (no real network connectivity)");
+        eprintln!("  Install tailcat or add it to PATH for real P2P connections.");
+    }
 
     // Initialize the daemon.
     let daemon = Arc::new(Daemon::new(dir.to_path_buf(), config, identity)?);

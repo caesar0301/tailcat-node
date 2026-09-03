@@ -57,7 +57,7 @@ impl Daemon {
             peer_registry: RwLock::new(peer_registry),
             service_registry: RwLock::new(service_registry),
             connection_table: ConnectionTable::new(),
-            backend: build_backend(),
+            backend: build_backend().0,
         })
     }
 
