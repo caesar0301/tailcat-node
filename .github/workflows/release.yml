@@ -15,65 +15,33 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: -C debuginfo=0
 
 jobs:
   build:
-    name: Build (${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            archive: tailcat-node-x86_64-linux-gnu.tar.gz
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            archive: tailcat-node-aarch64-linux-gnu.tar.gz
-          - os: macos-13
-            target: x86_64-apple-darwin
-            archive: tailcat-node-x86_64-apple-darwin.tar.gz
-          - os: macos-14
-            target: aarch64-apple-darwin
-            archive: tailcat-node-aarch64-apple-darwin.tar.gz
-    runs-on: ${{ matrix.os }}
+    name: Build (ubuntu x86_64)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-release-
-      - name: Install cross-compilation toolchain (Linux aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_AR=aarch64-linux-gnu-ar" >> $GITHUB_ENV
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release
       - name: Package
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/tailcat-node dist/
-          tar -C dist -czf ${{ matrix.archive }} tailcat-node
-          shasum -a 256 ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
+          cp target/release/tailcat-node dist/
+          tar -C dist -czf tailcat-node-x86_64-linux-gnu.tar.gz tailcat-node
+          shasum -a 256 tailcat-node-x86_64-linux-gnu.tar.gz > tailcat-node-x86_64-linux-gnu.tar.gz.sha256
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }}
+          name: tailcat-node-x86_64-linux-gnu
           path: |
-            ${{ matrix.archive }}
-            ${{ matrix.archive }}.sha256
+            tailcat-node-x86_64-linux-gnu.tar.gz
+            tailcat-node-x86_64-linux-gnu.tar.gz.sha256
           retention-days: 14
 
   release:
@@ -111,36 +79,17 @@ jobs:
             --title "tailcat-node ${{ steps.version.outputs.version }}" \
             --notes "## tailcat-node ${{ steps.version.outputs.version }}
 
-          Built binaries for Linux and macOS (x86_64 and aarch64).
+          Built binary for Linux x86_64.
 
           ### Assets
           - \`tailcat-node-x86_64-linux-gnu.tar.gz\` — Linux x86_64
-          - \`tailcat-node-aarch64-linux-gnu.tar.gz\` — Linux aarch64
-          - \`tailcat-node-x86_64-apple-darwin.tar.gz\` — macOS x86_64 (Intel)
-          - \`tailcat-node-aarch64-apple-darwin.tar.gz\` — macOS aarch64 (Apple Silicon)
+          - \`tailcat-node-x86_64-linux-gnu.tar.gz.sha256\` — SHA256 checksum
 
           ### Verification
-          Each asset has a corresponding \`.sha256\` checksum file.
-
           \`\`\`bash
-          shasum -a 256 -c tailcat-node-*.sha256
+          shasum -a 256 -c tailcat-node-x86_64-linux-gnu.tar.gz.sha256
           \`\`\`
           " \
             --verify-tag \
             artifacts/*.tar.gz \
             artifacts/*.sha256
-      - name: Generate SBOM-like manifest
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          {
-            echo "# tailcat-node ${{ steps.version.outputs.version }} - Asset Manifest"
-            echo
-            echo "| Asset | Target | OS | Arch |"
-            echo "|---|---|---|---|"
-            echo "| \`tailcat-node-x86_64-linux-gnu.tar.gz\` | x86_64-unknown-linux-gnu | Linux | x86_64 |"
-            echo "| \`tailcat-node-aarch64-linux-gnu.tar.gz\` | aarch64-unknown-linux-gnu | Linux | aarch64 |"
-            echo "| \`tailcat-node-x86_64-apple-darwin.tar.gz\` | x86_64-apple-darwin | macOS | x86_64 (Intel) |"
-            echo "| \`tailcat-node-aarch64-apple-darwin.tar.gz\` | aarch64-apple-darwin | macOS | aarch64 (Apple Silicon) |"
-          } > RELEASE_MANIFEST.md
-          gh release upload "${{ steps.version.outputs.tag }}" RELEASE_MANIFEST.md --clobber
