@@ -752,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "tailcat-node"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "async-trait",
