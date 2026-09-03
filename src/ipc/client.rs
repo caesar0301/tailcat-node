@@ -85,6 +85,14 @@ impl IpcClient {
         // Parse the response.
         let response = String::from_utf8_lossy(&buf);
 
+        // Parse the HTTP status code from the first line.
+        let status_line = response.lines().next().unwrap_or("");
+        let status_code: u16 = status_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
         // Find the body (after \r\n\r\n).
         let body_start = response
             .find("\r\n\r\n")
@@ -92,6 +100,18 @@ impl IpcClient {
         let body_text = &response[body_start + 4..];
 
         let value: Value = serde_json::from_str(body_text)?;
+
+        // Non-2xx responses carry an error body like {"error": "..."}.
+        if !(200..300).contains(&status_code) {
+            let msg = value
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            // Use Error::Daemon so the Display prefix is "Daemon error: "
+            // which is appropriate for errors relayed from the daemon.
+            return Err(Error::Daemon(msg.to_string()));
+        }
+
         Ok(value)
     }
 }

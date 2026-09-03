@@ -65,4 +65,29 @@ impl Error {
             _ => 1,
         }
     }
+
+    /// Return the inner message without the error-variant prefix.
+    ///
+    /// `Error::Backend("foo")` Display is "Tailcat backend error: foo".
+    /// This returns just "foo", useful when serializing errors for IPC
+    /// so the client doesn't see a double-wrapped prefix.
+    pub fn inner_message(&self) -> String {
+        match self {
+            Error::Io(e) => e.to_string(),
+            Error::TomlDe(e) => e.to_string(),
+            Error::TomlSer(e) => e.to_string(),
+            Error::Json(e) => e.to_string(),
+            Error::NotInitialized(s) => s.clone(),
+            Error::AlreadyInitialized(s) => s.clone(),
+            Error::PeerNotFound(s) => s.clone(),
+            Error::ServiceNotFound(s) => s.clone(),
+            Error::Identity(s) => s.clone(),
+            Error::Daemon(s) => s.clone(),
+            Error::Ipc(s) => s.clone(),
+            Error::Backend(s) => s.clone(),
+            Error::InvalidArgument(s) => s.clone(),
+            Error::NotRunning(s) => s.clone(),
+            Error::Other(e) => e.to_string(),
+        }
+    }
 }

@@ -29,6 +29,7 @@ pub struct NodeInfo {
     pub node_name: Option<String>,
     pub public_key: String,
     pub version: String,
+    pub backend_available: bool,
 }
 
 /// The daemon orchestrates all subsystems.
@@ -39,7 +40,7 @@ pub struct Daemon {
     peer_registry: RwLock<PeerRegistry>,
     service_registry: RwLock<ServiceRegistry>,
     connection_table: ConnectionTable,
-    backend: Arc<dyn Backend>,
+    backend: Option<Arc<dyn Backend>>,
 }
 
 impl Daemon {
@@ -57,7 +58,7 @@ impl Daemon {
             peer_registry: RwLock::new(peer_registry),
             service_registry: RwLock::new(service_registry),
             connection_table: ConnectionTable::new(),
-            backend: build_backend().0,
+            backend: build_backend(),
         })
     }
 
@@ -72,6 +73,7 @@ impl Daemon {
             node_name: self.config.node.name.clone(),
             public_key: self.identity.public_key.clone(),
             version: crate::VERSION.to_string(),
+            backend_available: !self.is_degraded(),
         }
     }
 
@@ -101,12 +103,23 @@ impl Daemon {
 
     /// Start the network backend.
     pub async fn backend_start(&self) -> Result<()> {
-        self.backend.start().await
+        match &self.backend {
+            Some(b) => b.start().await,
+            None => Ok(()), // Degraded mode — nothing to start.
+        }
     }
 
     /// Stop the network backend.
     pub async fn backend_stop(&self) -> Result<()> {
-        self.backend.stop().await
+        match &self.backend {
+            Some(b) => b.stop().await,
+            None => Ok(()),
+        }
+    }
+
+    /// Whether the daemon is running in degraded mode (no tailcat backend).
+    pub fn is_degraded(&self) -> bool {
+        self.backend.is_none()
     }
 
     /// Connect to a peer. Uses lazy connections: only connects when
@@ -135,7 +148,14 @@ impl Daemon {
         self.connection_table.set(&peer_id, connecting_status).await;
 
         // Connect via backend.
-        match self.backend.connect(&peer_id, &token).await {
+        let result = match &self.backend {
+            Some(b) => b.connect(&peer_id, &token).await,
+            None => Err(Error::Backend(
+                "tailcat binary not found — daemon is running in degraded mode. Install tailcat to enable network operations.".to_string(),
+            )),
+        };
+
+        match result {
             Ok(status) => {
                 self.connection_table.set(&peer_id, status.clone()).await;
                 Ok(status)
@@ -157,7 +177,12 @@ impl Daemon {
 
     /// Disconnect from a peer.
     pub async fn disconnect_peer(&self, peer_id: &str) -> Result<()> {
-        self.backend.disconnect(peer_id).await?;
+        match &self.backend {
+            Some(b) => b.disconnect(peer_id).await?,
+            None => return Err(Error::Backend(
+                "tailcat binary not found — daemon is running in degraded mode. Install tailcat to enable network operations.".to_string(),
+            )),
+        }
         self.connection_table
             .set(
                 peer_id,
@@ -188,7 +213,12 @@ impl Daemon {
         let peer_id = peer.id.clone();
         drop(registry);
 
-        self.backend.ping(&peer_id, &token).await
+        match &self.backend {
+            Some(b) => b.ping(&peer_id, &token).await,
+            None => Err(Error::Backend(
+                "tailcat binary not found — daemon is running in degraded mode. Install tailcat to enable network operations.".to_string(),
+            )),
+        }
     }
 
     /// Get the status of a peer.

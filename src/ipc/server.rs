@@ -24,6 +24,11 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 
+/// Serialize an error for the IPC JSON response.
+fn error_json(e: &crate::error::Error) -> Value {
+    json!({"error": e.inner_message()})
+}
+
 /// Start the IPC server on the given Unix socket path.
 pub async fn serve(daemon: Arc<Daemon>, socket_path: impl AsRef<Path>) -> Result<()> {
     let socket_path = socket_path.as_ref();
@@ -134,7 +139,7 @@ async fn route(daemon: &Daemon, method: &str, path: &str, body: &str) -> (u16, S
                 let mut registry = daemon.peer_registry_for_write().await;
                 registry.add(peer);
                 if let Err(e) = registry.save() {
-                    (500, json!({"error": e.to_string()}))
+                    (500, error_json(&e))
                 } else {
                     (201, json!({"ok": true}))
                 }
@@ -146,7 +151,7 @@ async fn route(daemon: &Daemon, method: &str, path: &str, body: &str) -> (u16, S
             let mut registry = daemon.peer_registry_for_write().await;
             if registry.remove(id) {
                 if let Err(e) = registry.save() {
-                    (500, json!({"error": e.to_string()}))
+                    (500, error_json(&e))
                 } else {
                     (200, json!({"ok": true}))
                 }
@@ -158,14 +163,14 @@ async fn route(daemon: &Daemon, method: &str, path: &str, body: &str) -> (u16, S
             let id = p.trim_start_matches("/v1/connect/");
             match daemon.connect_peer(id).await {
                 Ok(status) => (200, serde_json::to_value(&status).unwrap_or_default()),
-                Err(e) => (500, json!({"error": e.to_string()})),
+                Err(e) => (500, error_json(&e)),
             }
         }
         ("POST", p) if p.starts_with("/v1/disconnect/") => {
             let id = p.trim_start_matches("/v1/disconnect/");
             match daemon.disconnect_peer(id).await {
                 Ok(()) => (200, json!({"ok": true})),
-                Err(e) => (500, json!({"error": e.to_string()})),
+                Err(e) => (500, error_json(&e)),
             }
         }
         ("GET", "/v1/services") => {

@@ -143,11 +143,15 @@ async fn start(dir: &Path, foreground: bool) -> Result<()> {
 
     // If not foreground, spawn a detached child with --foreground and exit.
     if !foreground {
-        // Warn if the tailcat binary is missing — the daemon will run but
-        // all network operations will use the mock backend (no real connectivity).
+        // Warn if the tailcat binary is missing — the daemon will start in
+        // degraded mode (peer/service management works, but no P2P connectivity).
         if which::which("tailcat").is_err() {
-            eprintln!("⚠ tailcat binary not found on PATH — using mock backend (no real network connectivity)");
-            eprintln!("  Install tailcat or add it to PATH for real P2P connections.");
+            eprintln!();
+            eprintln!("⚠ tailcat binary not found — starting in DEGRADED MODE");
+            eprintln!("  Peer and service management will work, but network operations");
+            eprintln!("  (connect, disconnect, ping) will fail until tailcat is installed.");
+            eprintln!("  Install tailcat:  https://github.com/caesar0301/tailcat");
+            eprintln!();
         }
 
         // Check if already running.
@@ -209,11 +213,15 @@ async fn start(dir: &Path, foreground: bool) -> Result<()> {
 
     // --- Foreground mode (the actual daemon process) ---
 
-    // Warn if the tailcat binary is missing — the daemon will run but
-    // all network operations will use the mock backend (no real connectivity).
+    // Warn if the tailcat binary is missing — the daemon will start in
+    // degraded mode (peer/service management works, but no P2P connectivity).
     if which::which("tailcat").is_err() {
-        eprintln!("⚠ tailcat binary not found on PATH — using mock backend (no real network connectivity)");
-        eprintln!("  Install tailcat or add it to PATH for real P2P connections.");
+        eprintln!();
+        eprintln!("⚠ tailcat binary not found — starting in DEGRADED MODE");
+        eprintln!("  Peer and service management will work, but network operations");
+        eprintln!("  (connect, disconnect, ping) will fail until tailcat is installed.");
+        eprintln!("  Install tailcat:  https://github.com/caesar0301/tailcat");
+        eprintln!();
     }
 
     // Initialize the daemon.
@@ -354,6 +362,15 @@ async fn status(dir: &Path) -> Result<()> {
                 "  version:    {}",
                 value.get("version").and_then(|v| v.as_str()).unwrap_or("?")
             );
+            let backend_ok = value
+                .get("backend_available")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if backend_ok {
+                println!("  backend:    ✓ tailcat (connected)");
+            } else {
+                println!("  backend:    ✗ tailcat not found (DEGRADED MODE)");
+            }
             println!();
 
             match IpcClient::new(dir).get("/v1/status").await {
@@ -655,19 +672,24 @@ async fn ping(dir: &Path, id: String) -> Result<()> {
                     .unwrap_or(0)
             );
         }
-        Err(_) => {
-            // Fallback: check if peer exists.
-            let mut registry = PeerRegistry::new(dir.to_path_buf());
-            registry.load()?;
-            match registry.get(&id) {
-                Some(peer) => {
-                    if peer.enabled {
-                        println!("{}: reachable (offline check — peer is configured)", id);
-                    } else {
-                        println!("{}: not reachable (peer is disabled)", id);
+        Err(e) => {
+            // If the daemon is not running, do an offline check.
+            if matches!(e, Error::NotRunning(_)) {
+                let mut registry = PeerRegistry::new(dir.to_path_buf());
+                registry.load()?;
+                match registry.get(&id) {
+                    Some(peer) => {
+                        if peer.enabled {
+                            println!("{}: reachable (offline check — peer is configured)", id);
+                        } else {
+                            println!("{}: not reachable (peer is disabled)", id);
+                        }
                     }
+                    None => return Err(Error::PeerNotFound(id)),
                 }
-                None => return Err(Error::PeerNotFound(id)),
+            } else {
+                // Daemon is running but the operation failed (e.g. degraded mode).
+                return Err(e);
             }
         }
     }
@@ -839,7 +861,7 @@ async fn doctor(dir: &Path) -> Result<()> {
     print!("tailcat binary:    ");
     match which::which("tailcat") {
         Ok(path) => println!("✓ ({})", path.display()),
-        Err(_) => println!("✗ (not found — using mock backend)"),
+        Err(_) => println!("✗ (not found — daemon will run in DEGRADED MODE)"),
     }
 
     // Check IPC socket.

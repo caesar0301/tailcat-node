@@ -8,5 +8,6 @@
 pub mod tailcat;
 
 pub use tailcat::{
-    build_backend, ping_result_to_status, Backend, BackendPeerStatus, MockBackend, PingResult,
+    build_backend, ping_result_to_status, tailcat_available, Backend, BackendPeerStatus,
+    PingResult,
 };

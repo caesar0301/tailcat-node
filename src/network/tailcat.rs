@@ -11,8 +11,11 @@
 //! - A. Invoke `tailcat` binary (easy, stable boundary, good for prototyping)
 //! - B. Embed Tailcat library (cleaner but adds Rust↔Go boundary)
 //!
-//! We prototype A first. The mock backend is used when the `tailcat`
-//! binary is not available.
+//! When the `tailcat` binary is not on PATH, `build_backend()` returns
+//! `None`. The daemon starts in **degraded mode**: peer/service
+//! management and IPC work normally, but network operations (connect,
+//! disconnect, ping) return a clear error. No mock or stub backend is
+//! used — we never fabricate connection state.
 
 use crate::error::Result;
 use crate::peer::{ConnectionPath, PeerState, PeerStatus};
@@ -58,70 +61,29 @@ pub trait Backend: Send + Sync {
     async fn ping(&self, peer_id: &str, token: &str) -> Result<PingResult>;
 }
 
-/// Mock backend used when the `tailcat` binary is not available.
-/// Simulates connections with deterministic latency.
-pub struct MockBackend;
-
-#[async_trait]
-impl Backend for MockBackend {
-    async fn start(&self) -> Result<()> {
-        tracing::info!("MockBackend started");
-        Ok(())
-    }
-
-    async fn stop(&self) -> Result<()> {
-        tracing::info!("MockBackend stopped");
-        Ok(())
-    }
-
-    async fn connect(&self, peer_id: &str, _token: &str) -> Result<PeerStatus> {
-        tracing::info!("MockBackend connecting to {}", peer_id);
-        // Simulate a direct connection with low latency.
-        let latency = 5 + (peer_id.len() as u32 % 20);
-        Ok(PeerStatus {
-            peer_id: peer_id.to_string(),
-            state: PeerState::Connected,
-            path: ConnectionPath::Direct,
-            latency_ms: Some(latency),
-            last_connected: Some(Utc::now()),
-            last_error: None,
-        })
-    }
-
-    async fn disconnect(&self, peer_id: &str) -> Result<()> {
-        tracing::info!("MockBackend disconnecting from {}", peer_id);
-        Ok(())
-    }
-
-    async fn ping(&self, peer_id: &str, _token: &str) -> Result<PingResult> {
-        let latency = 5 + (peer_id.len() as u32 % 20);
-        Ok(PingResult {
-            peer_id: peer_id.to_string(),
-            reachable: true,
-            path: ConnectionPath::Direct,
-            latency_ms: latency,
-        })
-    }
-}
-
 /// Build the appropriate backend.
 ///
-/// If the `tailcat` binary is found on PATH, use the process-based
-/// backend. Otherwise, fall back to the mock backend.
-///
-/// Returns `(backend, is_mock)` so the caller can warn the user.
-pub fn build_backend() -> (Arc<dyn Backend>, bool) {
+/// If the `tailcat` binary is found on PATH, return the process-based
+/// backend. Otherwise, return `None` — the daemon will run in degraded
+/// mode (peer/service management works, but network operations fail
+/// with a clear error).
+pub fn build_backend() -> Option<Arc<dyn Backend>> {
     match which::which("tailcat") {
         Ok(path) => {
             tracing::info!("Found tailcat binary at {}", path.display());
-            // For now, use the mock backend even if tailcat is found,
-            // since the process-based backend is not yet implemented.
-            (Arc::new(MockBackend), true)
+            // The process-based backend is not yet implemented.
+            // TODO: implement TailcatProcessBackend that invokes the
+            // `tailcat` binary for connect/disconnect/ping.
+            tracing::warn!("tailcat binary found but process backend not yet implemented — running in degraded mode");
+            None
         }
-        Err(_) => {
-            (Arc::new(MockBackend), true)
-        }
+        Err(_) => None,
     }
+}
+
+/// Check whether the `tailcat` binary is available on PATH.
+pub fn tailcat_available() -> bool {
+    which::which("tailcat").is_ok()
 }
 
 /// Convert a [`PingResult`] to a [`PeerStatus`].

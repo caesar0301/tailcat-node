@@ -12,7 +12,7 @@ async fn main() -> std::process::ExitCode {
     match tailcat_node::cli::run().await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {}", e.inner_message());
             std::process::ExitCode::from(e.exit_code() as u8)
         }
     }
